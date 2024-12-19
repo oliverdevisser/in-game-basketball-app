@@ -41,7 +41,7 @@
   display: flex;
   gap: 15px;
   font-size: 14px;
-  color: #cccccc;
+  align-items: center;
 }
 
 .team-stat {
@@ -105,4 +105,28 @@
 
 .flagrant {
   background-color: #ff8800;
+}
+
+.foul-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bonus-indicator {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.bonus {
+  background-color: #ffd700;
+  color: #000000;
+}
+
+.bonus-plus {
+  background-color: #ff6b6b;
+  color: #ffffff;
 } 

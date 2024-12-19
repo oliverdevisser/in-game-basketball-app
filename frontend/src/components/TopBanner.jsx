@@ -2,13 +2,26 @@ import React from 'react';
 import './TopBanner.css';
 
 const TopBanner = ({ gameData }) => {
-  const { teams } = gameData;
+  const { teams, current_period, game_clock } = gameData;
   const [teamA, teamB] = teams || [];
 
   const getTimeoutDisplay = (team) => {
     const full = team?.full_timeouts || 0;
     const short = team?.short_timeouts || 0;
-    return `TO: ${full + short}`;  // Sum of full and short timeouts
+    return `TO: ${full + short}`;
+  };
+
+  const getFoulDisplay = (team) => {
+    const fouls = team?.current_quarter_fouls || 0;
+    const bonusStatus = team?.bonus_status;
+    return (
+      <div className="foul-status">
+        <span className="team-stat">Fouls: {fouls}</span>
+        {bonusStatus && <span className={`bonus-indicator ${bonusStatus === 'Bonus+' ? 'bonus-plus' : 'bonus'}`}>
+          {bonusStatus}
+        </span>}
+      </div>
+    );
   };
 
   return (
@@ -23,7 +36,7 @@ const TopBanner = ({ gameData }) => {
               {teamA?.flagrant_fouls > 0 && <span className="foul-indicator flagrant">F</span>}
             </div>
             <div className="team-stats-row">
-              <span className="team-stat">Fouls: {teamA?.team_fouls}</span>
+              {getFoulDisplay(teamA)}
               <span className="team-stat">{getTimeoutDisplay(teamA)}</span>
             </div>
           </div>
@@ -32,9 +45,8 @@ const TopBanner = ({ gameData }) => {
 
         {/* Game Info */}
         <div className="game-info">
-          <div className="period">Q3</div>
-          <div className="game-clock">1:00</div>
-          {/* Only show possession arrow if we have that information */}
+          <div className="period">Q{current_period}</div>
+          <div className="game-clock">{game_clock}</div>
           <div className="possession-arrow">⟩</div>
         </div>
 
@@ -48,7 +60,7 @@ const TopBanner = ({ gameData }) => {
               {teamB?.flagrant_fouls > 0 && <span className="foul-indicator flagrant">F</span>}
             </div>
             <div className="team-stats-row">
-              <span className="team-stat">Fouls: {teamB?.team_fouls}</span>
+              {getFoulDisplay(teamB)}
               <span className="team-stat">{getTimeoutDisplay(teamB)}</span>
             </div>
           </div>
