@@ -1,95 +1,265 @@
 import React from 'react';
+import { DataGrid } from '@mui/x-data-grid';
+import { Box, Typography } from '@mui/material';
 import './TeamPanel.css';
 
-const TeamPanel = ({ teamData, onPlayerSelect }) => {
-  // Helper function to determine player icons
-  const getPlayerIcons = (player) => {
-    const icons = [];
-    
-    // Hot shooter icon (FG% > 50% with min 5 attempts)
-    if (player.fg_pct > 0.5 && player.fg_attempted >= 5) {
-      icons.push("🔥");
-    }
-    
-    // Rebounder icon (5+ rebounds)
-    if (player.total_rebounds >= 5) {
-      icons.push("💪");
-    }
-    
-    // Foul trouble icon
-    if (player.fouls >= 4) {
-      icons.push("⚠️");
-    }
-    
-    // Playmaker icon (5+ assists)
-    if (player.assists >= 5) {
-      icons.push("👀");
-    }
+const TeamPanel = ({ teamData, onPlayerSelect, selectedPlayerId, selectedTeam, teamIdentifier }) => {
+  if (!teamData || !teamData.players) {
+    return <div className="team-panel">Loading...</div>;
+  }
 
-    return icons.join('');
+  // Calculate team totals
+  const teamTotals = {
+    id: 'team-total',
+    number: 'TOT',
+    minutes: teamData.players.reduce((total, player) => {
+      return total + (player.minutes * 60 + player.seconds);
+    }, 0),
+    points: teamData.players.reduce((total, player) => total + (player.points || 0), 0),
+    rebounds: teamData.players.reduce((total, player) => total + (player.total_rebounds || 0), 0),
+    assists: teamData.players.reduce((total, player) => total + (player.assists || 0), 0),
+    fgm: teamData.players.reduce((total, player) => total + (player.fg_made || 0), 0),
+    fga: teamData.players.reduce((total, player) => total + (player.fg_attempted || 0), 0),
+    fouls: teamData.players.reduce((total, player) => total + (player.fouls || 0), 0),
+    plusMinus: teamData.players.reduce((total, player) => total + (player.plusminus || 0), 0),
+    isTotal: true  // Special flag for styling
   };
 
-  // Sort players by minutes played
-  const sortedPlayers = [...(teamData.players || [])].sort((a, b) => 
-    (b.minutes * 60 + b.seconds) - (a.minutes * 60 + a.seconds)
-  );
+  // Calculate derived fields for team totals
+  teamTotals.fg = `${teamTotals.fgm}/${teamTotals.fga}`;
+  teamTotals.fgPct = teamTotals.fga > 0 ? ((teamTotals.fgm / teamTotals.fga) * 100).toFixed(1) : '0.0';
+  // Convert total seconds to MM:SS format
+  const totalMinutes = Math.floor(teamTotals.minutes / 60);
+  const totalSeconds = teamTotals.minutes % 60;
+  teamTotals.minutes = `${totalMinutes}:${String(totalSeconds).padStart(2, '0')}`;
+  teamTotals.minutesSort = 999999; // Ensure it sorts to the top
+
+  // Filter out players with 0 minutes and format data for DataGrid
+  const playerRows = teamData.players
+    .filter(player => player.minutes > 0 || player.seconds > 0)
+    .map(player => ({
+      id: player.person_id,
+      name: `${player.first_name} ${player.last_name}`,
+      number: player.jersey_number,
+      minutes: `${player.minutes}:${String(player.seconds).padStart(2, '0')}`,
+      points: player.points || 0,
+      rebounds: player.total_rebounds || 0,
+      assists: player.assists || 0,
+      fgm: player.fg_made || 0,
+      fga: player.fg_attempted || 0,
+      fgPct: (player.fg_pct || 0).toFixed(1),
+      fouls: player.fouls || 0,
+      plusMinus: player.plusminus || 0,
+      minutesSort: (player.minutes * 60 + player.seconds) || 0,
+      isOnCourt: player.oncourt,
+      // Add combined field for FG
+      fg: `${player.fg_made || 0}/${player.fg_attempted || 0}`
+    }))
+    .filter(row => row !== null);
+
+  const rows = [teamTotals, ...playerRows];
+
+  // Define column widths as percentages of total width
+  const columns = [
+    {
+      field: 'number',
+      headerName: '#',
+      flex: 0.4,
+      minWidth: 30,
+      renderCell: (params) => (
+        <Box sx={{
+          fontWeight: params.row.isTotal ? 'bold' : 'bold',
+          color: params.row.isTotal ? '#000' : (params.row.isOnCourt ? '#1976d2' : 'inherit'),
+          textAlign: 'center',
+          width: '100%',
+          backgroundColor: params.row.isTotal ? '#f5f5f5' : 'transparent',
+        }}>
+          {params.value}
+        </Box>
+      ),
+    },
+    {
+      field: 'minutes',
+      headerName: 'MIN',
+      flex: 0.6,
+      minWidth: 45,
+      sortComparator: (v1, v2, param1, param2) => {
+        if (!param1?.row?.minutesSort || !param2?.row?.minutesSort) {
+          return 0;
+        }
+        return param1.row.minutesSort - param2.row.minutesSort;
+      }
+    },
+    {
+      field: 'points',
+      headerName: 'PTS',
+      flex: 0.4,
+      minWidth: 35,
+      align: 'center',
+      headerAlign: 'center',
+    },
+    {
+      field: 'rebounds',
+      headerName: 'REB',
+      flex: 0.4,
+      minWidth: 35,
+      align: 'center',
+      headerAlign: 'center',
+    },
+    {
+      field: 'assists',
+      headerName: 'AST',
+      flex: 0.4,
+      minWidth: 35,
+      align: 'center',
+      headerAlign: 'center',
+    },
+    {
+      field: 'fg',
+      headerName: 'FG',
+      flex: 0.5,
+      minWidth: 45,
+      align: 'center',
+      headerAlign: 'center',
+    },
+    {
+      field: 'fgPct',
+      headerName: 'FG%',
+      flex: 0.5,
+      minWidth: 45,
+      align: 'center',
+      headerAlign: 'center',
+      valueFormatter: (params) => `${params.value}%`,
+    },
+    {
+      field: 'fouls',
+      headerName: 'PF',
+      flex: 0.3,
+      minWidth: 30,
+      align: 'center',
+      headerAlign: 'center',
+    },
+    {
+      field: 'plusMinus',
+      headerName: '+/-',
+      flex: 0.4,
+      minWidth: 35,
+      align: 'center',
+      headerAlign: 'center',
+    },
+  ];
 
   return (
     <div className="team-panel">
-      <div className="box-score-container">
-        <table className="box-score-table">
-          <thead>
-            <tr>
-              <th className="checkbox-col"></th>
-              <th className="number-col">#</th>
-              <th className="stat-col">MIN</th>
-              <th className="stat-col">PTS</th>
-              <th className="stat-col">AST</th>
-              <th className="stat-col">REB</th>
-              <th className="stat-col">F</th>
-              <th className="stat-col">FG%</th>
-              <th className="stat-col">+/-</th>
-            </tr>
-          </thead>
-          <tbody>
-            {/* Team Totals Row */}
-            <tr className="team-totals">
-              <td></td>
-              <td>Team</td>
-              <td>-</td>
-              <td>{teamData.points}</td>
-              <td>{teamData.assists}</td>
-              <td>{teamData.rebounds}</td>
-              <td>{teamData.team_fouls}</td>
-              <td>{(teamData.fg_pct * 100).toFixed(1)}</td>
-              <td>-</td>
-            </tr>
-            {/* Player Rows */}
-            {sortedPlayers.map(player => (
-              <tr key={player.person_id} className={player.oncourt ? 'on-court' : ''}>
-                <td className="checkbox-col">
-                  <input 
-                    type="checkbox" 
-                    onChange={(e) => onPlayerSelect(player.person_id, e.target.checked)}
-                  />
-                </td>
-                <td className="number-col" title={`${player.first_name} ${player.last_name}`}>
-                  {player.jersey_number}{getPlayerIcons(player)}
-                </td>
-                <td>{player.minutes}:{String(player.seconds).padStart(2, '0')}</td>
-                <td>{player.points}</td>
-                <td>{player.assists}</td>
-                <td>{player.total_rebounds}</td>
-                <td className={player.fouls >= 4 ? 'foul-warning' : ''}>{player.fouls}</td>
-                <td>{((player.fg_made / player.fg_attempted) * 100 || 0).toFixed(1)}</td>
-                <td className={player.plusminus > 0 ? 'positive' : player.plusminus < 0 ? 'negative' : ''}>
-                  {player.plusminus > 0 ? `+${player.plusminus}` : player.plusminus}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <Typography variant="h6" sx={{
+        p: 0.5,
+        bgcolor: '#f5f5f5',
+        fontSize: '0.9rem',
+        fontWeight: 'bold'
+      }}>
+        {teamData.team_name}
+      </Typography>
+      <Box sx={{
+        flexGrow: 1,
+        width: '100%',
+        overflow: 'hidden',
+        '& .MuiDataGrid-root': {
+          border: 'none',
+          fontSize: '0.8rem',
+          WebkitFontSmoothing: 'auto',
+          letterSpacing: 'normal',
+          width: '100%',
+          overflow: 'hidden !important',
+          '& .MuiDataGrid-main': {
+            overflow: 'hidden !important',
+          },
+          '& .MuiDataGrid-columnHeaders': {
+            borderBottom: '1px solid #ddd',
+            minHeight: '30px !important',
+            maxHeight: '30px !important',
+            lineHeight: '30px',
+            backgroundColor: '#f5f5f5',
+            color: '#666',
+            fontWeight: 'bold',
+          },
+          '& .MuiDataGrid-virtualScroller': {
+            marginTop: '30px !important',
+            overflowX: 'hidden !important',
+          },
+          '& .MuiDataGrid-columnsContainer': {
+            backgroundColor: '#f5f5f5',
+          },
+          '& .MuiDataGrid-cell': {
+            borderBottom: '1px solid #f0f0f0',
+            padding: '0 4px',
+            whiteSpace: 'nowrap',
+          },
+          '& .MuiDataGrid-row': {
+            minHeight: '25px !important',
+            maxHeight: '25px !important',
+            '&.Mui-selected': {
+              backgroundColor: '#e3f2fd !important',
+              '&:hover': {
+                backgroundColor: '#e3f2fd !important',
+              },
+            },
+            // Add styles for team totals row
+            '&[data-id="team-total"]': {
+              backgroundColor: (theme) =>
+                selectedPlayerId === 'TEAM'
+                  ? '#e3f2fd !important'  // Same blue as player selection when selected
+                  : '#f5f5f5 !important',
+              fontWeight: 'bold',
+              borderBottom: '2px solid #ddd',
+              '&:hover': {
+                backgroundColor: '#edf5fd !important',  // Slightly lighter blue on hover
+                cursor: 'pointer',
+              },
+            },
+          },
+          '& .MuiDataGrid-row:hover': {
+            backgroundColor: '#f8f8f8',
+            cursor: 'pointer',
+          },
+        }
+      }}>
+        <DataGrid
+          rows={rows}
+          columns={columns}
+          initialState={{
+            sorting: {
+              sortModel: [{ field: 'minutes', sort: 'desc' }],
+            },
+          }}
+          sortingOrder={['desc', 'asc']}
+          hideFooter={true}
+          onRowClick={(params) => {
+            if (params.row.isTotal) {
+              onPlayerSelect('team-total');
+            } else {
+              onPlayerSelect(params.row.id);
+            }
+          }}
+          disableColumnMenu
+          disableSelectionOnClick={true}
+          selectionModel={
+            selectedPlayerId === 'TEAM' ? ['team-total'] :
+              (selectedTeam === teamIdentifier && selectedPlayerId) ?
+                [selectedPlayerId] :
+                []
+          }
+          onSelectionModelChange={() => { }}
+          autoHeight
+          density="compact"
+          disableColumnResize
+          style={{ width: '100%' }}
+          sx={{
+            '& .MuiDataGrid-virtualScroller': {
+              overflowX: 'hidden !important',
+            }
+          }}
+        />
+      </Box>
     </div>
   );
 };

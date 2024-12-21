@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import './App.css'; // Uses the same CSS provided
 import TopBanner from './components/TopBanner';
 import TeamPanel from './components/TeamPanel';
-import LineupVisual from './components/LineupVisual';
+import VisualizationContainer from './components/VisualizationContainer';
 
 function App() {
   const [snapshots, setSnapshots] = useState([]);
@@ -14,6 +14,9 @@ function App() {
   const [pbpData, setPbpData] = useState(null);
 
   const [showFullScreen, setShowFullScreen] = useState(false);
+  const [selectedPlayer, setSelectedPlayer] = useState(null);
+  const [selectedPlayerId, setSelectedPlayerId] = useState('TEAM');
+  const [selectedTeam, setSelectedTeam] = useState(null);
 
   useEffect(() => {
     fetch('http://localhost:5002/snapshots')
@@ -76,6 +79,17 @@ function App() {
     }
   };
 
+  const handlePlayerSelect = (playerId) => {
+    if (playerId === 'TEAM' || playerId === 'team-total') {
+      setSelectedTeam(null);
+      setSelectedPlayerId('TEAM');
+    } else {
+      const team = teamA.players.find(p => p.person_id === playerId) ? 'A' : 'B';
+      setSelectedTeam(team);
+      setSelectedPlayerId(playerId);
+    }
+  };
+
   const teamA = boxscoreData?.teams?.[0];
   const teamB = boxscoreData?.teams?.[1];
 
@@ -110,26 +124,29 @@ function App() {
       {showFullScreen && boxscoreData && (
         <div className="grid-container">
           <TopBanner gameData={boxscoreData} />
-          <TeamPanel 
-            teamData={teamA} 
-            onPlayerSelect={(playerId, selected) => {
-              console.log(`Player ${playerId} ${selected ? 'selected' : 'unselected'}`);
-            }}
+          <TeamPanel
+            teamData={teamA}
+            onPlayerSelect={handlePlayerSelect}
+            selectedPlayerId={selectedPlayerId}
+            selectedTeam={selectedTeam}
+            teamIdentifier="A"
           />
           <div className="center-area">
             {lineupsData && (
-              <LineupVisual 
+              <VisualizationContainer
                 lineupsData={lineupsData}
                 snapshot={selectedSnapshot}
                 gameId={selectedGame}
+                selectedPlayer={selectedPlayerId}
               />
             )}
           </div>
-          <TeamPanel 
+          <TeamPanel
             teamData={teamB}
-            onPlayerSelect={(playerId, selected) => {
-              console.log(`Player ${playerId} ${selected ? 'selected' : 'unselected'}`);
-            }}
+            onPlayerSelect={handlePlayerSelect}
+            selectedPlayerId={selectedPlayerId}
+            selectedTeam={selectedTeam}
+            teamIdentifier="B"
           />
           {/* If you implement a bottom tracker later, you can place it here */}
         </div>

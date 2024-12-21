@@ -3,6 +3,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from parse_xml import list_snapshots, list_games, parse_boxscore, parse_lineups, parse_pbp, parse_shot_chart, parse_shot_zones
 from parse_pbp_shots import parse_pbp_shots
+from parse_lineup_stints import create_lineup_tracker
 import os
 
 app = Flask(__name__)
@@ -139,19 +140,72 @@ def get_shots():
     except Exception as e:
         print(f"Error in get_shots: {e}")
         return jsonify({"error": str(e)}), 500
-# current plan:
-# {
-#   "player": "Tshiebwe",
-#   "player_id": "1631131",
-#   "team_abbr": "SLC",
-#   "team_id": "1612709903",
-#   "period": 1,
-#   "game_clock": "11:33",
-#   "locationX": 11,
-#   "locationY": 45,
-#   "made": true, 
-#   "points": 2
-# }
+
+@app.route('/api/lineup-data/<game_id>/<snapshot>', methods=['GET'])
+def get_lineup_data(game_id, snapshot):
+    """Get lineup data for the specified game and snapshot"""
+    # Initialize tracker
+    tracker = create_lineup_tracker(
+        game_id=game_id,
+        snapshot=snapshot,
+        home_team_id="1612709903",
+        away_team_id="1612709924",
+        verbose=False
+    )
+    
+    # Process events and generate report
+    tracker.process_pbp_events()
+    report = tracker.generate_lineup_report()
+    
+    # Format data for frontend
+    response = {
+        "currentLineups": {
+            "home": {
+                "teamId": "1612709903",
+                "players": report["currentLineups"]["1612709903"],
+                "currentRun": report["currentRun"]["1612709903"]
+            },
+            "away": {
+                "teamId": "1612709924",
+                "players": report["currentLineups"]["1612709924"],
+                "currentRun": report["currentRun"]["1612709924"]
+            }
+        },
+        "lineupStats": {
+            lineup_key: {
+                "efficiency": stats["efficiency"],
+                "pointsFor": stats["points_for"],
+                "pointsAgainst": stats["points_against"],
+                "possessions": stats["possessions_for"],
+                "minutesPlayed": stats["minutes_played"]
+            }
+            for lineup_key, stats in report["lineupStats"].items()
+        },
+        "playerStats": {
+            player_id: {
+                "currentStint": {
+                    "startTime": player_data["currentStint"]["startTime"],
+                    "plusMinus": player_data["currentStint"]["plusMinus"],
+                    "fgm": player_data["currentStint"]["fgm"],
+                    "fga": player_data["currentStint"]["fga"],
+                    "stintDuration": player_data["currentStint"]["stintDuration"],
+                    "turnovers": player_data["currentStint"]["turnovers"],
+                    "fouls": player_data["currentStint"]["fouls"]
+                },
+                "totalStats": {
+                    "minutes": player_data["totalStats"]["minutes"],
+                    "plusMinus": player_data["totalStats"]["plusMinus"],
+                    "fgm": player_data["totalStats"]["fgm"],
+                    "fga": player_data["totalStats"]["fga"],
+                    "turnovers": player_data["totalStats"]["turnovers"],
+                    "fouls": player_data["totalStats"]["fouls"]
+                }
+            }
+            for player_id, player_data in report["playerStats"].items()
+        }
+    }
+    
+    return jsonify(response)
 
 if __name__ == '__main__':
     # Use the port you prefer, just ensure frontend matches

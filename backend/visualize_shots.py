@@ -1,7 +1,6 @@
 #This file likely unnecessary, but I'm keeping it for now
-#If I need to determine the zones in the backend, I can use this file and continue, but I want to
-#plot the shots as well in the frontend so I will have to pass them anyways, will determine zones there
-
+#More for testing shooting charts
+#resource: http://savvastjortjoglou.com/nba-shot-sharts.html
 
 import os
 from lxml import etree
@@ -10,319 +9,215 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle, Arc, Path, PathPatch
 import numpy as np
 from matplotlib.widgets import RadioButtons
+from matplotlib.image import imread
+from parse_pbp_shots import define_zones, transform_coordinates
+from shapely.geometry import Point, Polygon
+import xml.etree.ElementTree as ET
+
 
 DATA_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'pbp_snap_shot')
+COURT_IMAGE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend', 'src', 'assets', 'clippers-court2.png')
 
-# Constants matching CourtStage.jsx
-PAINT = {
-    'rect_top_y': 172,
-    'rect_bottom_y': 328,
-    'rect_right_x': 70,
-    'arc_center_y': 250,
-    'arc_radius': (328 - 172) / 2
-}
-
-THREE_POINT = {
-    'arc_top_baseline_y': 32,
-    'arc_bottom_baseline_y': 467,
-    'arc_start_x': 150,
-    'corner_width': 150
-}
-
-def draw_court(ax=None, color='black', lw=2, outer_lines=False):
-    if ax is None:
-        ax = plt.gca()
-
-    # Basketball hoop
-    hoop = Circle((0, 0), radius=7.5, linewidth=lw, color=color, fill=False)
-
-    # Backboard
-    backboard = Rectangle((-30, -7.5), 60, -1, linewidth=lw, color=color)
-
-    # Paint area
-    outer_box = Rectangle((-80, -47.5), 160, 190, linewidth=lw, color=color, fill=False)
-    inner_box = Rectangle((-60, -47.5), 120, 190, linewidth=lw, color=color, fill=False)
-
-    # Free throw arcs
-    top_free_throw = Arc((0, 142.5), 120, 120, theta1=0, theta2=180, linewidth=lw, color=color, fill=False)
-    bottom_free_throw = Arc((0, 142.5), 120, 120, theta1=180, theta2=0, linewidth=lw, color=color, linestyle='dashed')
+def determine_shot_zone(x, y, zones, paint_circle, three_point_circle):
+    """
+    Determine which zone a shot belongs to, following the priority order:
+    1. Paint (rectangle or circle)
+    2. MidRange3
+    3. MidRange1
+    4. CornerThree1 & CornerThree2
+    5. MidRange2 (anything left in 3pt circle)
+    6. WingThree1, WingThree2, TopKeyThree
+    """
+    point = Point(x, y)
     
-    # Restricted zone
-    restricted = Arc((0, 0), 80, 80, theta1=0, theta2=180, linewidth=lw, color=color)
+    # 1. Check Paint Zone (including circle)
+    if zones['paint'].contains(point) or paint_circle.contains(point):
+        return 1, 'paint'
+        
+    # 2. Check MidRange3
+    if zones['midRange3'].contains(point):
+        return 2, 'midRange3'
+        
+    # 3. Check MidRange1
+    if zones['midRange1'].contains(point):
+        return 3, 'midRange1'
+        
+    # 4. Check Corner Threes
+    if zones['cornerThree1'].contains(point):
+        return 4, 'cornerThree1'
+    if zones['cornerThree2'].contains(point):
+        return 5, 'cornerThree2'
+        
+    # 5. Check if in three point circle (MidRange2)
+    if three_point_circle.contains(point):
+        return 6, 'midRange2'
+        
+    # 6. Check remaining three point zones
+    if zones['wingThree1'].contains(point):
+        return 7, 'wingThree1'
+    if zones['wingThree2'].contains(point):
+        return 8, 'wingThree2'
+    if zones['topKeyThree'].contains(point):
+        return 9, 'topKeyThree'
+        
+    return 0, 'unknown'
 
-    # Three point line
-    corner_three_a = Rectangle((-220, -47.5), 0, 140, linewidth=lw, color=color)
-    corner_three_b = Rectangle((220, -47.5), 0, 140, linewidth=lw, color=color)
-    three_arc = Arc((0, 0), 475, 475, theta1=22, theta2=158, linewidth=lw, color=color)
-
-    # Center court
-    center_outer_arc = Arc((0, 422.5), 120, 120, theta1=180, theta2=0, linewidth=lw, color=color)
-    center_inner_arc = Arc((0, 422.5), 40, 40, theta1=180, theta2=0, linewidth=lw, color=color)
-
-    court_elements = [hoop, backboard, outer_box, inner_box, top_free_throw,
-                     bottom_free_throw, restricted, corner_three_a,
-                     corner_three_b, three_arc, center_outer_arc,
-                     center_inner_arc]
-
-    if outer_lines:
-        outer_lines = Rectangle((-250, -47.5), 500, 470, linewidth=lw, color=color, fill=False)
-        court_elements.append(outer_lines)
-
-    for element in court_elements:
-        ax.add_patch(element)
-
-    return ax
-
-def draw_zones(ax):
-    """Draw all shooting zones on the court"""
+def plot_zones_and_court():
+    plt.figure(figsize=(20, 10))
+    ax = plt.gca()
     
-    # Paint Zone (red)
-    paint_rect = Rectangle((-PAINT['rect_right_x'], PAINT['rect_top_y']), 
-                         2*PAINT['rect_right_x'], 
-                         PAINT['rect_bottom_y']-PAINT['rect_top_y'],
-                         facecolor='red', alpha=0.3)
-    ax.add_patch(paint_rect)
+    # Load and display court image
+    court_img = imread(COURT_IMAGE)
+    ax.imshow(court_img, extent=[0, 1000, 500, 0])
     
-    # Paint Arc
-    paint_arc = Arc((0, PAINT['arc_center_y']), 
-                   2*PAINT['arc_radius'], 2*PAINT['arc_radius'],
-                   theta1=0, theta2=180,
-                   facecolor='red', alpha=0.3)
-    ax.add_patch(paint_arc)
+    # Get zones from define_zones()
+    zones = define_zones()
+    
+    # Plot each zone with different colors and thicker borders
+    zone_colors = {
+        'paint': 'red',
+        'midRange1': 'green',
+        'midRange2': 'green',
+        'midRange3': 'green',
+        'cornerThree1': 'yellow',
+        'cornerThree2': 'yellow',
+        'wingThree1': 'yellow',
+        'wingThree2': 'yellow',
+        'topKeyThree': 'yellow'
+    }
+    
+    # Plot each zone
+    for zone_name, zone_shape in zones.items():
+        try:
+            if zone_shape and not zone_shape.is_empty:
+                if hasattr(zone_shape, 'exterior'):
+                    x, y = zone_shape.exterior.xy
+                    plt.fill(x, y, alpha=0.3, fc=zone_colors[zone_name], 
+                            ec='black', linewidth=2, label=zone_name)  # Added black edge color and thicker line
+                    
+                    try:
+                        centroid = zone_shape.centroid
+                        if not centroid.is_empty:
+                            plt.text(centroid.x, centroid.y, zone_name, 
+                                   horizontalalignment='center',
+                                   verticalalignment='center',
+                                   fontsize=8)
+                    except Exception as e:
+                        print(f"Could not add label for {zone_name}: {e}")
+        except Exception as e:
+            print(f"Error plotting zone {zone_name}: {e}")
+    
+    # Mirror zones to right side
+    for zone_name, zone_shape in zones.items():
+        try:
+            if zone_shape and not zone_shape.is_empty and hasattr(zone_shape, 'exterior'):
+                x, y = zone_shape.exterior.xy
+                mirrored_x = [1000 - xi for xi in x]
+                plt.fill(mirrored_x, y, alpha=0.3, fc=zone_colors[zone_name],
+                        ec='black', linewidth=2)  # Added black edge color and thicker line
+        except Exception as e:
+            print(f"Error mirroring zone {zone_name}: {e}")
+    
+    # Calculate the three point arc circle parameters (same as in define_zones)
+    sx = 150  # THREE_POINT.arcStartX
+    sy = 32   # THREE_POINT.arcStartY
+    ex = 150  # THREE_POINT.arcStartX
+    ey = 467  # THREE_POINT.arcBottomBaselineY
+    
+    dx = ex - sx
+    dy = ey - sy
+    dist = np.sqrt(dx * dx + dy * dy)
+    R = (dist / 2) * 1.055  # Same radius factor as frontend
+    
+    # Calculate arc center
+    mx = (sx + ex) / 2
+    my = (sy + ey) / 2
+    px = -dy
+    py = dx
+    pl = np.sqrt(px * px + py * py)
+    px /= pl
+    py /= pl
+    h = np.sqrt(R * R - (dist / 2) * (dist / 2))
+    cx = mx + px * h
+    cy = my + py * h
 
-    # Mid-Range Zones (green)
-    # Mid-Range 1 (bottom)
-    midrange1 = Rectangle((-PAINT['rect_right_x'], PAINT['rect_bottom_y']),
-                        2*PAINT['rect_right_x'],
-                        THREE_POINT['arc_bottom_baseline_y']-PAINT['rect_bottom_y'],
-                        facecolor='green', alpha=0.3)
-    ax.add_patch(midrange1)
-
-    # Mid-Range 2 (middle)
-    vertices = [
-        (-PAINT['rect_right_x'], PAINT['rect_top_y']),
-        (-THREE_POINT['arc_start_x'], THREE_POINT['arc_top_baseline_y']),
-        (-THREE_POINT['arc_start_x'], THREE_POINT['arc_bottom_baseline_y']),
-        (-PAINT['rect_right_x'], PAINT['rect_bottom_y'])
-    ]
-    midrange2 = plt.Polygon(vertices, facecolor='green', alpha=0.3)
-    ax.add_patch(midrange2)
-    # Mirror to right side
-    vertices_right = [(-x, y) for x, y in vertices]
-    midrange2_right = plt.Polygon(vertices_right, facecolor='green', alpha=0.3)
-    ax.add_patch(midrange2_right)
-
-    # Mid-Range 3 (top)
-    midrange3 = Rectangle((-PAINT['rect_right_x'], THREE_POINT['arc_top_baseline_y']),
-                        2*PAINT['rect_right_x'],
-                        PAINT['rect_top_y']-THREE_POINT['arc_top_baseline_y'],
-                        facecolor='green', alpha=0.3)
-    ax.add_patch(midrange3)
-
-    # Three Point Zones (yellow)
-    # Corner Three 1 (bottom)
-    corner_three1 = Rectangle((-THREE_POINT['corner_width'], THREE_POINT['arc_bottom_baseline_y']),
-                           2*THREE_POINT['corner_width'], 100,
-                           facecolor='yellow', alpha=0.3)
-    ax.add_patch(corner_three1)
-
-    # Corner Three 2 (top)
-    corner_three2 = Rectangle((-THREE_POINT['corner_width'], -100),
-                           2*THREE_POINT['corner_width'],
-                           THREE_POINT['arc_top_baseline_y']+100,
-                           facecolor='yellow', alpha=0.3)
-    ax.add_patch(corner_three2)
-
-    # Wing Three 1 & 2 and Top Key Three
-    three_arc = Arc((0, 0), 475, 475,
-                   theta1=22, theta2=158,
-                   facecolor='yellow', alpha=0.3)
-    ax.add_patch(three_arc)
-
-def collect_shot_data():
+    # Add paint arc circle (centered at x=70, y=250)
+    paint_circle = Circle((70, 250), 78, fill=False, linestyle='--', color='black', linewidth=2)
+    ax.add_patch(paint_circle)
+    # Mirror paint arc circle
+    paint_circle_mirror = Circle((1000-70, 250), 78, fill=False, linestyle='--', color='black', linewidth=2)
+    ax.add_patch(paint_circle_mirror)
+    
+    # Add three point arc circle using the calculated center and radius
+    three_point_circle = Circle((cx, cy), R, fill=False, linestyle='--', color='black', linewidth=2)
+    ax.add_patch(three_point_circle)
+    # Mirror three point arc circle
+    three_point_circle_mirror = Circle((1000-cx, cy), R, fill=False, linestyle='--', color='black', linewidth=2)
+    ax.add_patch(three_point_circle_mirror)
+    
+    # Create Shapely circle objects for zone checking
+    paint_circle = Point(70, 250).buffer(78)
+    three_point_circle = Point(cx, cy).buffer(R)
+    
+    # Get actual shots from pbp data
+    base_dir = os.path.join(DATA_ROOT, 'middle_of_third')
+    game_id = '2052400190'
     shots = []
-    
-    for snapshot in os.listdir(DATA_ROOT):
-        snapshot_path = os.path.join(DATA_ROOT, snapshot)
-        if not os.path.isdir(snapshot_path):
-            continue
-            
-        for filename in os.listdir(snapshot_path):
-            if '_pbp_Q' in filename and filename.endswith('.xml'):
-                file_path = os.path.join(snapshot_path, filename)
-                
-                tree = etree.parse(file_path)
-                root = tree.getroot()
-                
-                for event in root.xpath(".//Event_pbp"):
-                    if event.get("Msg_type") in ["1", "2"]:  # 1=made shot, 2=missed shot
-                        shot = {
-                            'x': int(event.get("LocationX", "0")),
-                            'y': int(event.get("LocationY", "0")),
-                            'made': event.get("Msg_type") == "1",
-                            'team_id': event.get("Team_id"),
-                            'player_id': event.get("Person_id"),
-                            'period': int(event.get("Period", "1")),
-                            'game_clock': event.get("Game_clock"),
-                            'game_id': filename.split('_')[0]
-                        }
-                        shots.append(shot)
-    
-    return pd.DataFrame(shots)
 
-def point_in_zone(x, y, zone_name):
-    """Check if a point (x,y) is within a specific zone"""
-    
-    if zone_name == "paint":
-        # Check rectangle part
-        in_rect = (abs(x) <= PAINT['rect_right_x'] and 
-                  PAINT['rect_top_y'] <= y <= PAINT['rect_bottom_y'])
+    # Process all quarters
+    for quarter in range(1, 11):  # Up to 6 OT periods (Q1-Q4 + 6OT)
+        quarter_file = os.path.join(base_dir, f"{game_id}_pbp_Q{quarter}.xml")
         
-        # Check arc part if not in rectangle
-        if not in_rect:
-            dx = abs(x) - PAINT['rect_right_x']
-            dy = y - PAINT['arc_center_y']
-            in_arc = (dx*dx + dy*dy <= PAINT['arc_radius']*PAINT['arc_radius'] and
-                     PAINT['rect_top_y'] <= y <= PAINT['rect_bottom_y'])
-            return in_arc
-        return True
-        
-    elif zone_name == "midRange1":
-        return (abs(x) <= PAINT['rect_right_x'] and
-                PAINT['rect_bottom_y'] <= y <= THREE_POINT['arc_bottom_baseline_y'])
-                
-    elif zone_name == "midRange2":
-        if not (PAINT['rect_right_x'] <= abs(x) <= THREE_POINT['arc_start_x']):
-            return False
-        if not (PAINT['rect_top_y'] <= y <= PAINT['rect_bottom_y']):
-            return False
-        # Make sure point is not in paint zone
-        return not point_in_zone(x, y, "paint")
-        
-    elif zone_name == "midRange3":
-        return (abs(x) <= PAINT['rect_right_x'] and
-                THREE_POINT['arc_top_baseline_y'] <= y <= PAINT['rect_top_y'])
-                
-    elif zone_name == "cornerThree1":
-        return (abs(x) <= THREE_POINT['corner_width'] and
-                y >= THREE_POINT['arc_bottom_baseline_y'])
-                
-    elif zone_name == "cornerThree2":
-        return (abs(x) <= THREE_POINT['corner_width'] and
-                y <= THREE_POINT['arc_top_baseline_y'])
-                
-    elif zone_name == "wingThree1":
-        if y > THREE_POINT['arc_top_baseline_y']:
-            return False
-        if abs(x) < THREE_POINT['corner_width']:
-            return False
-        # Check if beyond three point line
-        dx = abs(x)
-        dy = y - PAINT['arc_center_y']
-        return (dx*dx + dy*dy >= 475*475/4)
-        
-    elif zone_name == "wingThree2":
-        if y < THREE_POINT['arc_bottom_baseline_y']:
-            return False
-        if abs(x) < THREE_POINT['corner_width']:
-            return False
-        # Check if beyond three point line
-        dx = abs(x)
-        dy = y - PAINT['arc_center_y']
-        return (dx*dx + dy*dy >= 475*475/4)
-        
-    elif zone_name == "topKeyThree":
-        if abs(x) < THREE_POINT['corner_width']:
-            return False
-        if y < THREE_POINT['arc_top_baseline_y'] or y > THREE_POINT['arc_bottom_baseline_y']:
-            return False
-        # Check if beyond three point line
-        dx = abs(x)
-        dy = y - PAINT['arc_center_y']
-        return (dx*dx + dy*dy >= 475*475/4)
-    
-    return False
-
-def plot_shots():
-    df = collect_shot_data()
-    
-    # Add zone classification to dataframe
-    df['zone'] = df.apply(lambda row: next(
-        (zone for zone in [
-            "paint", "midRange1", "midRange2", "midRange3",
-            "cornerThree1", "cornerThree2", "wingThree1",
-            "wingThree2", "topKeyThree"
-        ] if point_in_zone(row['x'], row['y'], zone)), 
-        "unknown"
-    ), axis=1)
-    
-    # Create figure and axes
-    fig = plt.figure(figsize=(15, 10))
-    ax = plt.subplot2grid((1, 4), (0, 0), colspan=3)
-    
-    # Create radio buttons for zone selection
-    rax = plt.subplot2grid((1, 4), (0, 3))
-    zones = ['all', 'paint', 'midRange1', 'midRange2', 'midRange3',
-             'cornerThree1', 'cornerThree2', 'wingThree1', 'wingThree2', 'topKeyThree']
-    radio = RadioButtons(rax, zones)
-    
-    def update_plot(zone):
-        ax.clear()
-        draw_zones(ax)
-        draw_court(ax, outer_lines=True)
-        
-        # Filter shots based on selected zone
-        if zone != 'all':
-            plot_df = df[df['zone'] == zone]
-        else:
-            plot_df = df
+        if not os.path.exists(quarter_file):
+            continue  # Skip if this quarter's file doesn't exist
             
-        # Plot shots
-        made_shots = plot_df[plot_df['made']]
-        missed_shots = plot_df[~plot_df['made']]
-        
-        ax.scatter(made_shots['x'], made_shots['y'], 
-                  c='green', alpha=0.6, label='Made', marker='o', s=100)
-        ax.scatter(missed_shots['x'], missed_shots['y'],
-                  c='red', alpha=0.6, label='Missed', marker='x', s=100)
-        
-        # Update stats
-        total_shots = len(plot_df)
-        made_shots_count = len(made_shots)
-        fg_pct = (made_shots_count / total_shots * 100) if total_shots > 0 else 0
-        
-        # Clear previous text by setting new text in a fixed position
-        ax.text(-280, -80, 
-                f'Zone: {zone}\n'
-                f'Total Shots: {total_shots}\n'
-                f'Made Shots: {made_shots_count}\n'
-                f'FG%: {fg_pct:.1f}%',
-                fontsize=10,
-                bbox=dict(facecolor='white', alpha=0.8))
-        
-        ax.set_xlim(300, -300)
-        ax.set_ylim(-100, 500)
-        ax.axis('off')
-        plt.draw()
+        tree = ET.parse(quarter_file)
+        root = tree.getroot()
+
+        for game in root.findall('.//Game'):
+            for pbp in game.findall('.//Msg_play_by_play'):
+                for event in pbp.findall('.//Event_pbp'):
+                    msg_type = event.get('Msg_type')
+                    if msg_type in ['1', '2']:  # made or missed shot
+                        # Get original coordinates and transform them
+                        orig_x = int(event.get('LocationX'))
+                        orig_y = int(event.get('LocationY'))
+                        locX, locY = transform_coordinates(orig_x, orig_y)
+                        made = (msg_type == '1')
+                        
+                        shots.append({
+                            'x': locX,
+                            'y': locY,
+                            'made': made,
+                            'player': event.get('Last_name'),
+                            'period': int(event.get('Period')),
+                            'game_clock': event.get('Game_clock')
+                        })
+
+    # Plot each shot with its zone number
+    for shot in shots:
+        zone_num, zone_name = determine_shot_zone(shot['x'], shot['y'], zones, paint_circle, three_point_circle)
+        color = 'green' if shot['made'] else 'red'
+        plt.text(shot['x'], shot['y'], str(zone_num), 
+                color=color, fontsize=12, fontweight='bold',
+                ha='center', va='center',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+        print(f"Shot by {shot['player']} at Q{shot['period']} {shot['game_clock']} ({shot['x']}, {shot['y']}) "
+              f"is in zone {zone_num} ({zone_name}) - {'MADE' if shot['made'] else 'MISSED'}")
     
-    # Connect the radio buttons to the update function
-    radio.on_clicked(update_plot)
+    # Set the correct aspect ratio and limits
+    ax.set_xlim(0, 1000)
+    ax.set_ylim(500, 0)
+    ax.set_aspect('equal')
     
-    # Initial plot
-    update_plot('all')
+    # Add legend
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # Remove axes
+    plt.axis('off')
     
     plt.tight_layout()
     plt.show()
-    
-    # Print zone distribution
-    print("\nShots by Zone:")
-    zone_stats = df['zone'].value_counts()
-    print(zone_stats)
-    
-    # Print coordinate ranges
-    print("\nCoordinate Ranges:")
-    print(f"X: {df['x'].min()} to {df['x'].max()}")
-    print(f"Y: {df['y'].min()} to {df['y'].max()}")
 
 if __name__ == "__main__":
-    plot_shots() 
+    plot_zones_and_court() 

@@ -153,6 +153,7 @@ def parse_boxscore(snapshot, game_id):
         ft_pct = ft_made / ft_att if ft_att > 0 else 0.0
 
         stats = {
+            "team_id": team_id,
             "team_name": full_team_name,
             "points": int(team.get("Points", "0")),
             "rebounds": int(team.get("Total_rebounds", "0")),

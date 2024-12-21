@@ -1,7 +1,9 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Stage, Layer, Image, Line, Path, Group, Circle, Text } from 'react-konva';
+import { Stage, Layer, Image, Line, Path, Group, Circle, Text, Rect } from 'react-konva';
 import useImage from 'use-image';
-import courtImg from '../assets/clippers-court2.png';
+import courtImgShots from '../assets/clippers-court2.png';
+import courtImgLineup from '../assets/clippers-court2-og.png';
+
 
 const COURT_WIDTH = 1000;
 const COURT_HEIGHT = 500;
@@ -56,57 +58,57 @@ const generateMidRange1Shape = () => {
 };
 
 
-// Creates an arc passing through two given points (sx, sy) and (ex, ey) with a specified radiusFactor.
-// radiusFactor determines how "curved" the arc is. For example, radiusFactor = 1 would create a semicircle
-// spanning the line segment between the two points. Greater values produce a larger radius arc.
-function generateArcFromTwoPoints(sx, sy, ex, ey, radiusFactor, step = 5) {
-    const dx = ex - sx;
-    const dy = ey - sy;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const R = (dist / 2) * radiusFactor;
-    const h = Math.sqrt(R * R - (dist / 2) * (dist / 2));
+const mirrorPoints = (pointsOrPath) => {
+    if (Array.isArray(pointsOrPath)) {
+        // Handle array of points
+        return pointsOrPath.map((value, index) => {
+            if (index % 2 === 0) {
+                // Mirror x coordinates
+                return COURT_WIDTH - value;
+            }
+            return value;
+        });
+    } else if (typeof pointsOrPath === 'string') {
+        // Handle SVG path data
+        const commands = pointsOrPath.match(/[MLA]\s*[^MLAZ]*/g); // Match path commands and their arguments
+        if (!commands) return pointsOrPath;
 
-    // Midpoint of line segment
-    const mx = (sx + ex) / 2;
-    const my = (sy + ey) / 2;
+        return commands
+            .map((segment) => {
+                const command = segment[0]; // Extract command (M, L, A)
+                const args = segment.slice(1).trim().split(/[ ,]+/).map(Number); // Split arguments
 
-    // Perp direction
-    let px = -dy;
-    let py = dx;
-    const pl = Math.sqrt(px * px + py * py);
-    px /= pl;
-    py /= pl;
+                switch (command) {
+                    case 'M': // Move to
+                    case 'L': // Line to
+                        if (args.length >= 2) {
+                            const [x, y] = args;
+                            return `${command} ${COURT_WIDTH - x},${y}`;
+                        }
+                        break;
 
-    // Choose arc direction: here we assume arc bulges "upwards"
-    // Flip the sign of h if you want it to bulge the other way
-    const cx = mx + px * h;
-    const cy = my + py * h;
+                    case 'A': // Arc
+                        if (args.length >= 7) {
+                            const [rx, ry, xAxisRotation, largeArcFlag, sweepFlag, x2, y2] = args;
+                            const mirroredX2 = COURT_WIDTH - x2;
+                            const newSweepFlag = sweepFlag === 0 ? 1 : 0; // Flip the sweep flag to reverse arc direction
+                            return `${command} ${rx},${ry},${xAxisRotation},${largeArcFlag},${newSweepFlag},${mirroredX2},${y2}`;
+                        }
+                        break;
 
-    const angleStart = Math.atan2(sy - cy, sx - cx) * (180 / Math.PI);
-    const angleEnd = Math.atan2(ey - cy, ex - cx) * (180 / Math.PI);
+                    case 'Z': // Close path
+                        return 'Z';
 
-    let startAngle = angleStart;
-    let endAngle = angleEnd;
-    if (endAngle < startAngle) {
-        endAngle += 360;
+                    default:
+                        return segment; // Preserve unknown commands
+                }
+
+                return segment; // Fallback for malformed segments
+            })
+            .join(' ');
     }
-
-    const points = [];
-    for (let angle = startAngle; angle <= endAngle; angle += step) {
-        const rad = (angle * Math.PI) / 180;
-        const x = cx + R * Math.cos(rad);
-        const y = cy + R * Math.sin(rad);
-        points.push(x, y);
-    }
-    // Ensure end angle point is included
-    if (endAngle % step !== 0) {
-        const rad = (endAngle * Math.PI) / 180;
-        points.push(cx + R * Math.cos(rad), cy + R * Math.sin(rad));
-    }
-
-    return points;
-}
-
+    return pointsOrPath; // Return input if not a valid format
+};
 
 
 //path arc functions
@@ -533,29 +535,35 @@ const generateTopKeyThreeShape = () => {
     return pathCommands.join(' ');
 };
 
+// First, let's define zone center positions for stats display
+const ZONE_POSITIONS = {
+    paint: { x: 50, y: 250 },
+    midRange1: { x: 50, y: 400 },
+    midRange2: { x: 200, y: 250 },
+    midRange3: { x: 50, y: 100 },
+    cornerThree1: { x: 50, y: 483 },
+    cornerThree2: { x: 50, y: 17 },
+    wingThree1: { x: 275, y: 50 },
+    wingThree2: { x: 275, y: 440 },
+    topKeyThree: { x: 350, y: 250 }
+};
 
-const CourtStage = ({ displayMode, lineupsData, snapshot, gameId }) => {
+const CourtStage = ({ displayMode, lineupsData, snapshot, gameId, boxscoreData, selectedPlayer }) => {
     const containerRef = useRef(null);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-    const [courtImage] = useImage(courtImg);
+    // Load both images
+    const [courtImageShots] = useImage(courtImgShots);
+    const [courtImageLineup] = useImage(courtImgLineup);
     const [shots, setShots] = useState([]);
+    const [selectedZone, setSelectedZone] = useState(null);
+    const [zoneStats, setZoneStats] = useState({});
 
-    // Add useEffect to fetch shots when in shooting mode
+    // Add effect to reset zone selection when switching between players/teams
     useEffect(() => {
-        if (displayMode === 'shooting' && snapshot && gameId) {
-            fetch(`http://localhost:5002/api/shots?snapshot=${snapshot}&game_id=${gameId}`)
-                .then(res => res.json())
-                .then(data => {
-                    if (data.shots) {
-                        setShots(data.shots);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching shots:', error);
-                });
-        }
-    }, [displayMode, snapshot, gameId]);
+        setSelectedZone(null);
+    }, [selectedPlayer]);
 
+    // Move all useEffects to the top, before any conditional returns
     useEffect(() => {
         const updateDimensions = () => {
             if (containerRef.current) {
@@ -568,36 +576,98 @@ const CourtStage = ({ displayMode, lineupsData, snapshot, gameId }) => {
         return () => window.removeEventListener('resize', updateDimensions);
     }, []);
 
+    useEffect(() => {
+        if (displayMode === 'shooting' && snapshot && gameId) {
+            fetch(`http://localhost:5002/api/shots?snapshot=${snapshot}&game_id=${gameId}`)
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error(`HTTP error! status: ${res.status}`);
+                    }
+                    return res.json();
+                })
+                .then(data => {
+                    console.log('Received shot data:', data);
+                    if (data.shots) {
+                        console.log('Individual shots:', data.shots.map(shot => ({
+                            team_id: shot.team_id,
+                            locationX: shot.locationX,
+                            locationY: shot.locationY,
+                            made: shot.made
+                        })));
+                        setShots(data.shots);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching shots:', error.message);
+                });
+        }
+    }, [displayMode, snapshot, gameId]);
+
+    useEffect(() => {
+        if (shots.length > 0) {
+            const stats = calculateZoneStats(shots, selectedPlayer);
+            setZoneStats(stats);
+        }
+    }, [shots, selectedPlayer]);
+
+    // Early returns after all hooks
     if (!dimensions.width || !dimensions.height) {
         return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />;
     }
 
+    if (!lineupsData || !lineupsData.teamA || !lineupsData.teamB) {
+        console.log('Waiting for lineup data...');
+        return <div ref={containerRef} style={{ width: '100%', height: '100%' }}>Loading lineup data...</div>;
+    }
+
+    const teamAId = boxscoreData.teams[0].team_id;
+    const teamBId = boxscoreData.teams[1].team_id;
+
     const scale = Math.min(dimensions.width / COURT_WIDTH, dimensions.height / COURT_HEIGHT);
 
-    // Function to calculate player positions
-    const getPlayerPositions = (players, isTeamA) => {
-        const positions = [];
-        const baseX = isTeamA ? COURT_WIDTH * 0.25 : COURT_WIDTH * 0.75;
-        const spacing = 80;  // Vertical spacing between players
-        const startY = COURT_HEIGHT * 0.2;  // Start from 20% down the court
+    // Function to determine if a shot should be mirrored
+    const shouldMirrorShot = (shot) => {
+        if (!teamBId) {
+            console.log('No team B ID available');
+            return false;
+        }
 
-        players.forEach((player, index) => {
-            positions.push({
-                x: baseX + (index % 2) * 60 - 30,  // Stagger players left/right
-                y: startY + Math.floor(index / 2) * spacing,
-                player: player
-            });
+        console.log('Shot mirroring check:', {
+            shot_team_id: shot.team_id,
+            teamAId,
+            teamBId,
+            willMirror: shot.team_id === teamBId
         });
 
-        return positions;
+        // Mirror shots if the shooting team is teamB (right side)
+        return shot.team_id === teamBId;
     };
 
-    // Function to format stint time
-    const formatStintTime = (seconds) => {
-        if (!seconds && seconds !== 0) return '';
-        const mins = Math.floor(Math.abs(seconds) / 60);
-        const secs = Math.floor(Math.abs(seconds) % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    // Function to get shot coordinates
+    const getShotCoordinates = (shot) => {
+        if (!shot) {
+            console.log('No shot data provided');
+            return { x: 0, y: 0 };
+        }
+
+        const shouldMirror = shouldMirrorShot(shot);
+        const coords = shouldMirror ? {
+            x: COURT_WIDTH - shot.locationX,
+            y: shot.locationY
+        } : {
+            x: shot.locationX,
+            y: shot.locationY
+        };
+
+        console.log('Shot coordinates:', {
+            original: { x: shot.locationX, y: shot.locationY },
+            mirrored: shouldMirror,
+            final: coords,
+            teamA_id: lineupsData.teamA?.team_id,
+            teamB_id: lineupsData.teamB?.team_id
+        });
+
+        return coords;
     };
 
     const paintPoints = generatePaintShape();
@@ -605,6 +675,212 @@ const CourtStage = ({ displayMode, lineupsData, snapshot, gameId }) => {
     // const midRange2Points = generateMidRange2Shape();
     const midRange2Points = generateMidRange2Shapepath();
     const midRange3Points = generateMidRange3Shape();
+
+    // Function to calculate stats for each zone
+    const calculateZoneStats = (shots, selectedPlayer) => {
+        const stats = {};
+        const baseZones = ['paint', 'midRange1', 'midRange2', 'midRange3', 'cornerThree1',
+            'cornerThree2', 'wingThree1', 'wingThree2', 'topKeyThree'];
+
+        // Filter shots by player if one is selected
+        const filteredShots = selectedPlayer && selectedPlayer !== 'TEAM'
+            ? shots.filter(shot => shot.player_id === selectedPlayer)
+            : shots;
+
+        // Process each zone for both teams
+        baseZones.forEach(zone => {
+            // Team A zones (left side)
+            const teamAZone = `teamA_${zone}`;
+            const teamAShots = filteredShots.filter(shot =>
+                shot.zone === zone && shot.team_id === teamAId
+            );
+            const teamAMade = teamAShots.filter(shot => shot.made).length;
+            stats[teamAZone] = {
+                made: teamAMade,
+                attempts: teamAShots.length,
+                percentage: teamAShots.length > 0 ? (teamAMade / teamAShots.length) * 100 : 0
+            };
+
+            // Team B zones (right side)
+            const teamBZone = `teamB_${zone}`;
+            const teamBShots = filteredShots.filter(shot =>
+                shot.zone === zone && shot.team_id === teamBId
+            );
+            const teamBMade = teamBShots.filter(shot => shot.made).length;
+            stats[teamBZone] = {
+                made: teamBMade,
+                attempts: teamBShots.length,
+                percentage: teamBShots.length > 0 ? (teamBMade / teamBShots.length) * 100 : 0
+            };
+        });
+        return stats;
+    };
+
+    // Function to get color based on shooting percentage
+    const getZoneColor = (percentage, isSelected, zoneStats) => {
+        // Show gray for no attempts, regardless of team/player view
+        if (!zoneStats?.attempts) {
+            return `rgba(128, 128, 128, ${isSelected ? 0.5 : 0.3})`; // gray for no shots attempted
+        }
+
+        const baseOpacity = isSelected ? 0.5 : 0.3;
+        const opacityBoost = isSelected ? 0.3 : 0.2;
+
+        // Color scale from cold (yellow) to neutral (red) to hot (purple)
+        if (percentage < 33.3) {
+            return `rgba(255, 255, 0, ${baseOpacity + (percentage / 33.3) * opacityBoost})`; // cold (yellow)
+        }
+        if (percentage < 66.6) {
+            return `rgba(255, 0, 0, ${baseOpacity + ((percentage - 33.3) / 33.3) * opacityBoost})`; // neutral (red)
+        }
+        return `rgba(128, 0, 128, ${baseOpacity + ((percentage - 66.6) / 33.3) * opacityBoost})`; // hot (purple)
+    };
+
+    // Function to handle zone clicks
+    const handleZoneClick = (zoneName, teamId) => {
+        const fullZoneName = `team${teamId === teamAId ? 'A' : 'B'}_${zoneName}`;
+        setSelectedZone(selectedZone === fullZoneName ? null : fullZoneName);
+    };
+
+    // Component to display zone statistics (always visible)
+    const ZoneStatsDisplay = ({ stats, x, y, zoneName, teamId, isSelected }) => {
+        if (!stats) return null;
+
+        const BOX_WIDTH = 45;
+        const BOX_HEIGHT = 35;
+
+        const madeAttempts = stats.attempts > 0 ? `${stats.made}/${stats.attempts}` : '0/0';
+        const percentage = stats.attempts > 0 ? `${stats.percentage.toFixed(1)}%` : '~';
+
+        return (
+            <Group
+                x={x}
+                y={y}
+                onClick={() => handleZoneClick(zoneName, teamId)}
+                onTap={() => handleZoneClick(zoneName, teamId)}
+            >
+                <Rect
+                    width={BOX_WIDTH}
+                    height={BOX_HEIGHT}
+                    offsetX={BOX_WIDTH / 2}
+                    offsetY={BOX_HEIGHT / 2}
+                    fill="white"
+                    opacity={isSelected ? 0.7 : 0.5}
+                    cornerRadius={5}
+                />
+                {/* Made/Attempts text (smaller) */}
+                <Text
+                    text={madeAttempts}
+                    fontSize={10}  // Smaller font for made/attempts
+                    fontStyle="bold"
+                    fill="black"
+                    align="center"
+                    verticalAlign="middle"
+                    width={BOX_WIDTH}
+                    height={BOX_HEIGHT / 2}  // Use top half of box
+                    offsetX={BOX_WIDTH / 2}
+                    offsetY={BOX_HEIGHT / 2}  // Adjusted: removed +2
+                    padding={2}
+                />
+                {/* Percentage text (larger) */}
+                <Text
+                    text={percentage}
+                    fontSize={12}  // Larger font for percentage
+                    fontStyle="bold"
+                    fill="black"
+                    align="center"
+                    verticalAlign="middle"
+                    width={BOX_WIDTH}
+                    height={BOX_HEIGHT / 2}  // Use bottom half of box
+                    offsetX={BOX_WIDTH / 2}
+                    offsetY={BOX_HEIGHT / 2 - 12}  // Adjusted: changed from -8 to -12
+                    padding={2}
+                />
+            </Group>
+        );
+    };
+
+    // Component for the shooting efficiency legend
+    const ShootingLegend = () => {
+        const LEGEND_WIDTH = 120;  // Narrower width
+        const LEGEND_HEIGHT = 120;  // Slightly shorter
+        const BOX_SIZE = 15;  // Smaller boxes
+        const BOX_SPACING = 22;  // Less spacing between items
+        const TEXT_OFFSET = 25;  // Less offset for text
+
+        return (
+            <Group
+                x={(COURT_WIDTH - LEGEND_WIDTH) / 2}  // Center horizontally
+                y={COURT_HEIGHT - LEGEND_HEIGHT - 5}  // Closer to bottom
+            >
+                <Rect
+                    width={LEGEND_WIDTH}
+                    height={LEGEND_HEIGHT}
+                    fill="white"
+                    opacity={0.9}
+                    cornerRadius={5}
+                />
+                <Text
+                    text="Shooting Efficiency"
+                    width={LEGEND_WIDTH}
+                    align="center"
+                    y={5}
+                    fontSize={12}  // Smaller title
+                    fontStyle="bold"
+                />
+
+                {/* Vertical layout of boxes and labels */}
+                {[
+                    { text: "No Shots", color: "rgba(128, 128, 128, 0.5)" },
+                    { text: "Cold", color: "rgba(255, 255, 0, 0.5)" },
+                    { text: "Neutral", color: "rgba(255, 0, 0, 0.5)" },
+                    { text: "Hot", color: "rgba(128, 0, 128, 0.5)" }
+                ].map((item, index) => (
+                    <Group key={index}>
+                        {/* Box on left */}
+                        <Rect
+                            width={BOX_SIZE}
+                            height={BOX_SIZE}
+                            x={10}  // Less padding from left
+                            y={30 + (BOX_SPACING * index)}  // Start closer to title
+                            fill={item.color}
+                        />
+                        {/* Label on right */}
+                        <Text
+                            text={item.text}
+                            x={10 + TEXT_OFFSET}
+                            y={30 + (BOX_SPACING * index) + BOX_SIZE / 2 - 5}
+                            fontSize={10}  // Smaller text
+                            fontStyle="bold"
+                        />
+                    </Group>
+                ))}
+            </Group>
+        );
+    };
+
+    // Update getVisibleShots to show all shots by default
+    const getVisibleShots = (shots, selectedZone, selectedPlayer) => {
+        let filteredShots = shots;
+
+        // If no player is selected or TEAM is selected, show all shots
+        if (selectedPlayer && selectedPlayer !== 'TEAM') {
+            filteredShots = shots.filter(shot => shot.player_id === selectedPlayer);
+        }
+
+        // Then filter by zone if one is selected
+        if (selectedZone) {
+            const [teamPrefix, zoneName] = selectedZone.split('_');
+            const teamId = teamPrefix === 'teamA' ? teamAId : teamBId;
+
+            filteredShots = filteredShots.filter(shot =>
+                shot.zone === zoneName &&
+                shot.team_id === teamId
+            );
+        }
+
+        return filteredShots;
+    };
 
     return (
         <div ref={containerRef} style={{ width: '100%', height: '100%' }}>
@@ -614,179 +890,412 @@ const CourtStage = ({ displayMode, lineupsData, snapshot, gameId }) => {
                 scale={{ x: scale, y: scale }}
             >
                 <Layer>
-                    {courtImage && <Image image={courtImage} width={COURT_WIDTH} height={COURT_HEIGHT} />}
+                    {/* Use different court image based on display mode */}
+                    {displayMode === 'shooting' ? (
+                        courtImageShots && <Image image={courtImageShots} width={COURT_WIDTH} height={COURT_HEIGHT} />
+                    ) : (
+                        courtImageLineup && <Image image={courtImageLineup} width={COURT_WIDTH} height={COURT_HEIGHT} />
+                    )}
 
                     {displayMode === 'shooting' && (
                         <>
+                            {/* Team A (left) zones */}
                             {/* Paint */}
                             <Line
                                 points={paintPoints}
                                 closed={true}
-                                fill={PAINT.fill}
+                                fill={getZoneColor(
+                                    zoneStats.teamA_paint?.percentage,
+                                    selectedZone === 'teamA_paint',
+                                    zoneStats.teamA_paint
+                                )}
                                 stroke={PAINT.stroke}
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('paint', teamAId)}
                             />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_paint}
+                                x={ZONE_POSITIONS.paint.x}
+                                y={ZONE_POSITIONS.paint.y}
+                                zoneName="paint"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_paint'}
+                            />
+
                             {/* Mid-range zones */}
                             <Line
                                 points={midRange1Points}
                                 closed={true}
-                                fill="rgba(0, 255, 0, 0.3)"
+                                fill={getZoneColor(
+                                    zoneStats.teamA_midRange1?.percentage,
+                                    selectedZone === 'teamA_midRange1',
+                                    zoneStats.teamA_midRange1
+                                )}
                                 stroke="black"
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('midRange1', teamAId)}
                             />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_midRange1}
+                                x={ZONE_POSITIONS.midRange1.x}
+                                y={ZONE_POSITIONS.midRange1.y}
+                                zoneName="midRange1"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_midRange1'}
+                            />
+
                             <Path
                                 data={midRange2Points}
-                                fill="rgba(0, 255, 0, 0.3)"
+                                fill={getZoneColor(
+                                    zoneStats.teamA_midRange2?.percentage,
+                                    selectedZone === 'teamA_midRange2',
+                                    zoneStats.teamA_midRange2
+                                )}
                                 stroke="black"
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('midRange2', teamAId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_midRange2}
+                                x={ZONE_POSITIONS.midRange2.x}
+                                y={ZONE_POSITIONS.midRange2.y}
+                                zoneName="midRange2"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_midRange2'}
                             />
 
                             <Line
                                 points={midRange3Points}
                                 closed={true}
-                                fill="rgba(0, 255, 0, 0.3)"
+                                fill={getZoneColor(
+                                    zoneStats.teamA_midRange3?.percentage,
+                                    selectedZone === 'teamA_midRange3',
+                                    zoneStats.teamA_midRange3
+                                )}
                                 stroke="black"
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('midRange3', teamAId)}
                             />
-                            {/* New three-point zones */}
-                            <Line points={generateCornerThree1Shape()} closed={true} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Line points={generateCornerThree2Shape()} closed={true} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Path data={generateWingThree1Shape()} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Path data={generateWingThree2Shape()} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Path data={generateTopKeyThreeShape()} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            {/* Mirror all zones to right side */}
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_midRange3}
+                                x={ZONE_POSITIONS.midRange3.x}
+                                y={ZONE_POSITIONS.midRange3.y}
+                                zoneName="midRange3"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_midRange3'}
+                            />
+
+                            {/* Three-point zones */}
+                            <Line
+                                points={generateCornerThree1Shape()}
+                                closed={true}
+                                fill={getZoneColor(
+                                    zoneStats.teamA_cornerThree1?.percentage,
+                                    selectedZone === 'teamA_cornerThree1',
+                                    zoneStats.teamA_cornerThree1
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('cornerThree1', teamAId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_cornerThree1}
+                                x={ZONE_POSITIONS.cornerThree1.x}
+                                y={ZONE_POSITIONS.cornerThree1.y}
+                                zoneName="cornerThree1"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_cornerThree1'}
+                            />
+
+                            <Line
+                                points={generateCornerThree2Shape()}
+                                closed={true}
+                                fill={getZoneColor(
+                                    zoneStats.teamA_cornerThree2?.percentage,
+                                    selectedZone === 'teamA_cornerThree2',
+                                    zoneStats.teamA_cornerThree2
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('cornerThree2', teamAId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_cornerThree2}
+                                x={ZONE_POSITIONS.cornerThree2.x}
+                                y={ZONE_POSITIONS.cornerThree2.y}
+                                zoneName="cornerThree2"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_cornerThree2'}
+                            />
+
+                            <Path
+                                data={generateWingThree1Shape()}
+                                fill={getZoneColor(
+                                    zoneStats.teamA_wingThree1?.percentage,
+                                    selectedZone === 'teamA_wingThree1',
+                                    zoneStats.teamA_wingThree1
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('wingThree1', teamAId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_wingThree1}
+                                x={ZONE_POSITIONS.wingThree1.x}
+                                y={ZONE_POSITIONS.wingThree1.y}
+                                zoneName="wingThree1"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_wingThree1'}
+                            />
+
+                            <Path
+                                data={generateWingThree2Shape()}
+                                fill={getZoneColor(
+                                    zoneStats.teamA_wingThree2?.percentage,
+                                    selectedZone === 'teamA_wingThree2',
+                                    zoneStats.teamA_wingThree2
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('wingThree2', teamAId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_wingThree2}
+                                x={ZONE_POSITIONS.wingThree2.x}
+                                y={ZONE_POSITIONS.wingThree2.y}
+                                zoneName="wingThree2"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_wingThree2'}
+                            />
+
+                            <Path
+                                data={generateTopKeyThreeShape()}
+                                fill={getZoneColor(
+                                    zoneStats.teamA_topKeyThree?.percentage,
+                                    selectedZone === 'teamA_topKeyThree',
+                                    zoneStats.teamA_topKeyThree
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('topKeyThree', teamAId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamA_topKeyThree}
+                                x={ZONE_POSITIONS.topKeyThree.x}
+                                y={ZONE_POSITIONS.topKeyThree.y}
+                                zoneName="topKeyThree"
+                                teamId={teamAId}
+                                isSelected={selectedZone === 'teamA_topKeyThree'}
+                            />
+
+                            {/* Team B (right) zones */}
+                            {/* Paint */}
                             <Line
                                 points={mirrorPoints(paintPoints)}
                                 closed={true}
-                                fill={PAINT.fill}
+                                fill={getZoneColor(
+                                    zoneStats.teamB_paint?.percentage,
+                                    selectedZone === 'teamB_paint',
+                                    zoneStats.teamB_paint
+                                )}
                                 stroke={PAINT.stroke}
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('paint', teamBId)}
                             />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_paint}
+                                x={COURT_WIDTH - ZONE_POSITIONS.paint.x - 20}
+                                y={ZONE_POSITIONS.paint.y}
+                                zoneName="paint"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_paint'}
+                            />
+
+                            {/* Mid-range zones */}
                             <Line
                                 points={mirrorPoints(midRange1Points)}
                                 closed={true}
-                                fill="rgba(0, 255, 0, 0.3)"
+                                fill={getZoneColor(
+                                    zoneStats.teamB_midRange1?.percentage,
+                                    selectedZone === 'teamB_midRange1',
+                                    zoneStats.teamB_midRange1
+                                )}
                                 stroke="black"
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('midRange1', teamBId)}
                             />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_midRange1}
+                                x={COURT_WIDTH - ZONE_POSITIONS.midRange1.x - 20}
+                                y={ZONE_POSITIONS.midRange1.y}
+                                zoneName="midRange1"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_midRange1'}
+                            />
+
                             <Path
                                 data={mirrorPoints(midRange2Points)}
-                                fill="rgba(0, 255, 0, 0.3)"
+                                fill={getZoneColor(
+                                    zoneStats.teamB_midRange2?.percentage,
+                                    selectedZone === 'teamB_midRange2',
+                                    zoneStats.teamB_midRange2
+                                )}
                                 stroke="black"
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('midRange2', teamBId)}
                             />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_midRange2}
+                                x={COURT_WIDTH - ZONE_POSITIONS.midRange2.x - 20}
+                                y={ZONE_POSITIONS.midRange2.y}
+                                zoneName="midRange2"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_midRange2'}
+                            />
+
                             <Line
                                 points={mirrorPoints(midRange3Points)}
                                 closed={true}
-                                fill="rgba(0, 255, 0, 0.3)"
+                                fill={getZoneColor(
+                                    zoneStats.teamB_midRange3?.percentage,
+                                    selectedZone === 'teamB_midRange3',
+                                    zoneStats.teamB_midRange3
+                                )}
                                 stroke="black"
                                 strokeWidth={1}
+                                onClick={() => handleZoneClick('midRange3', teamBId)}
                             />
-                            <Line points={mirrorPoints(generateCornerThree1Shape())} closed={true} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Line points={mirrorPoints(generateCornerThree2Shape())} closed={true} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Path data={mirrorPoints(generateWingThree1Shape())} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Path data={mirrorPoints(generateWingThree2Shape())} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
-                            <Path data={mirrorPoints(generateTopKeyThreeShape())} fill="rgba(255, 255, 0, 0.3)" stroke="black" strokeWidth={1} />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_midRange3}
+                                x={COURT_WIDTH - ZONE_POSITIONS.midRange3.x - 20}
+                                y={ZONE_POSITIONS.midRange3.y}
+                                zoneName="midRange3"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_midRange3'}
+                            />
 
-                            {/* Add shot markers */}
-                            {shots.map((shot, index) => (
-                                <Group key={index} x={shot.locationX} y={shot.locationY}>
-                                    {shot.made ? (
-                                        // Made shot - green circle
-                                        <Circle
-                                            radius={5}
-                                            fill="green"
-                                            opacity={0.8}
-                                        />
-                                    ) : (
-                                        // Missed shot - red X
-                                        <>
-                                            <Line
-                                                points={[-5, -5, 5, 5]}
-                                                stroke="red"
-                                                strokeWidth={2}
-                                                opacity={0.8}
-                                            />
-                                            <Line
-                                                points={[-5, 5, 5, -5]}
-                                                stroke="red"
-                                                strokeWidth={2}
-                                                opacity={0.8}
-                                            />
-                                        </>
-                                    )}
-                                </Group>
-                            ))}
-                        </>
-                    )}
+                            {/* Three-point zones */}
+                            <Line
+                                points={mirrorPoints(generateCornerThree1Shape())}
+                                closed={true}
+                                fill={getZoneColor(
+                                    zoneStats.teamB_cornerThree1?.percentage,
+                                    selectedZone === 'teamB_cornerThree1',
+                                    zoneStats.teamB_cornerThree1
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('cornerThree1', teamBId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_cornerThree1}
+                                x={COURT_WIDTH - ZONE_POSITIONS.cornerThree1.x - 20}
+                                y={ZONE_POSITIONS.cornerThree1.y}
+                                zoneName="cornerThree1"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_cornerThree1'}
+                            />
 
-                    {displayMode === 'lineup' && lineupsData && (
-                        <>
-                            {/* Team A Players */}
-                            {getPlayerPositions(lineupsData.currentLineupTeamA, true).map((pos, i) => (
-                                <Group key={`teamA-${i}`} x={pos.x} y={pos.y}>
-                                    <Circle
-                                        radius={20}
-                                        fill="#2c5282"
-                                        stroke="white"
-                                        strokeWidth={2}
-                                    />
-                                    <Text
-                                        text={pos.player.jersey_number}
-                                        fill="white"
-                                        fontSize={16}
-                                        fontStyle="bold"
-                                        align="center"
-                                        verticalAlign="middle"
-                                        width={40}
-                                        height={40}
-                                        offsetX={20}
-                                        offsetY={20}
-                                    />
-                                    <Text
-                                        text={formatStintTime(pos.player.onCourtTime)}
-                                        fill="black"
-                                        fontSize={12}
-                                        align="center"
-                                        width={60}
-                                        offsetX={30}
-                                        y={25}
-                                    />
-                                </Group>
-                            ))}
+                            <Line
+                                points={mirrorPoints(generateCornerThree2Shape())}
+                                closed={true}
+                                fill={getZoneColor(
+                                    zoneStats.teamB_cornerThree2?.percentage,
+                                    selectedZone === 'teamB_cornerThree2',
+                                    zoneStats.teamB_cornerThree2
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('cornerThree2', teamBId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_cornerThree2}
+                                x={COURT_WIDTH - ZONE_POSITIONS.cornerThree2.x - 20}
+                                y={ZONE_POSITIONS.cornerThree2.y}
+                                zoneName="cornerThree2"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_cornerThree2'}
+                            />
 
-                            {/* Team B Players */}
-                            {getPlayerPositions(lineupsData.currentLineupTeamB, false).map((pos, i) => (
-                                <Group key={`teamB-${i}`} x={pos.x} y={pos.y}>
-                                    <Circle
-                                        radius={20}
-                                        fill="#e53e3e"
-                                        stroke="white"
-                                        strokeWidth={2}
-                                    />
-                                    <Text
-                                        text={pos.player.jersey_number}
-                                        fill="white"
-                                        fontSize={16}
-                                        fontStyle="bold"
-                                        align="center"
-                                        verticalAlign="middle"
-                                        width={40}
-                                        height={40}
-                                        offsetX={20}
-                                        offsetY={20}
-                                    />
-                                    <Text
-                                        text={formatStintTime(pos.player.onCourtTime)}
-                                        fill="black"
-                                        fontSize={12}
-                                        align="center"
-                                        width={60}
-                                        offsetX={30}
-                                        y={25}
-                                    />
-                                </Group>
-                            ))}
+                            <Path
+                                data={mirrorPoints(generateWingThree1Shape())}
+                                fill={getZoneColor(
+                                    zoneStats.teamB_wingThree1?.percentage,
+                                    selectedZone === 'teamB_wingThree1',
+                                    zoneStats.teamB_wingThree1
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('wingThree1', teamBId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_wingThree1}
+                                x={COURT_WIDTH - ZONE_POSITIONS.wingThree1.x - 20}
+                                y={ZONE_POSITIONS.wingThree1.y}
+                                zoneName="wingThree1"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_wingThree1'}
+                            />
+
+                            <Path
+                                data={mirrorPoints(generateWingThree2Shape())}
+                                fill={getZoneColor(
+                                    zoneStats.teamB_wingThree2?.percentage,
+                                    selectedZone === 'teamB_wingThree2',
+                                    zoneStats.teamB_wingThree2
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('wingThree2', teamBId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_wingThree2}
+                                x={COURT_WIDTH - ZONE_POSITIONS.wingThree2.x - 20}
+                                y={ZONE_POSITIONS.wingThree2.y}
+                                zoneName="wingThree2"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_wingThree2'}
+                            />
+
+                            <Path
+                                data={mirrorPoints(generateTopKeyThreeShape())}
+                                fill={getZoneColor(
+                                    zoneStats.teamB_topKeyThree?.percentage,
+                                    selectedZone === 'teamB_topKeyThree',
+                                    zoneStats.teamB_topKeyThree
+                                )}
+                                stroke="black"
+                                strokeWidth={1}
+                                onClick={() => handleZoneClick('topKeyThree', teamBId)}
+                            />
+                            <ZoneStatsDisplay
+                                stats={zoneStats.teamB_topKeyThree}
+                                x={COURT_WIDTH - ZONE_POSITIONS.topKeyThree.x - 20}
+                                y={ZONE_POSITIONS.topKeyThree.y}
+                                zoneName="topKeyThree"
+                                teamId={teamBId}
+                                isSelected={selectedZone === 'teamB_topKeyThree'}
+                            />
+
+                            {/* Updated shot markers */}
+                            {getVisibleShots(shots, selectedZone, selectedPlayer).map((shot, index) => {
+                                const coords = getShotCoordinates(shot);
+                                return (
+                                    <Group key={index} x={coords.x} y={coords.y}>
+                                        {shot.made ? (
+                                            <Circle radius={5} fill="green" opacity={0.8} />
+                                        ) : (
+                                            <>
+                                                <Line points={[-5, -5, 5, 5]} stroke="red" strokeWidth={2} opacity={0.8} />
+                                                <Line points={[-5, 5, 5, -5]} stroke="red" strokeWidth={2} opacity={0.8} />
+                                            </>
+                                        )}
+                                    </Group>
+                                );
+                            })}
+
+                            {/* Add the legend */}
+                            <ShootingLegend />
                         </>
                     )}
                 </Layer>
@@ -795,56 +1304,5 @@ const CourtStage = ({ displayMode, lineupsData, snapshot, gameId }) => {
     );
 };
 
-const mirrorPoints = (pointsOrPath) => {
-    if (Array.isArray(pointsOrPath)) {
-        // Handle array of points
-        return pointsOrPath.map((value, index) => {
-            if (index % 2 === 0) {
-                // Mirror x coordinates
-                return COURT_WIDTH - value;
-            }
-            return value;
-        });
-    } else if (typeof pointsOrPath === 'string') {
-        // Handle SVG path data
-        const commands = pointsOrPath.match(/[MLA]\s*[^MLAZ]*/g); // Match path commands and their arguments
-        if (!commands) return pointsOrPath;
-
-        return commands
-            .map((segment) => {
-                const command = segment[0]; // Extract command (M, L, A)
-                const args = segment.slice(1).trim().split(/[ ,]+/).map(Number); // Split arguments
-
-                switch (command) {
-                    case 'M': // Move to
-                    case 'L': // Line to
-                        if (args.length >= 2) {
-                            const [x, y] = args;
-                            return `${command} ${COURT_WIDTH - x},${y}`;
-                        }
-                        break;
-
-                    case 'A': // Arc
-                        if (args.length >= 7) {
-                            const [rx, ry, xAxisRotation, largeArcFlag, sweepFlag, x2, y2] = args;
-                            const mirroredX2 = COURT_WIDTH - x2;
-                            const newSweepFlag = sweepFlag === 0 ? 1 : 0; // Flip the sweep flag to reverse arc direction
-                            return `${command} ${rx},${ry},${xAxisRotation},${largeArcFlag},${newSweepFlag},${mirroredX2},${y2}`;
-                        }
-                        break;
-
-                    case 'Z': // Close path
-                        return 'Z';
-
-                    default:
-                        return segment; // Preserve unknown commands
-                }
-
-                return segment; // Fallback for malformed segments
-            })
-            .join(' ');
-    }
-    return pointsOrPath; // Return input if not a valid format
-};
 
 export default CourtStage;
